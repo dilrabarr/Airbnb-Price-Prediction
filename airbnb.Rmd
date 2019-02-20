@@ -1,0 +1,671 @@
+---
+title: "Kaggle Competition on Predicting Airbnb Price "
+author: "Dil"
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#1.1 Introduction
+This kaggle competition is to use available variables that could affect the price of airbnb in training data to predict the airbnb price in testing data
+
+###Think as a Business Analyst first, What is going on the Marketplace that could affect the airbnb price?
+
+![](/Users/rehemaitidilireba/Desktop/p5.png)
+
+This filled heat map shows that most of the highest price are located in the commercial districts of NYC and New Jersey areas. 
+
+First let us look at two examples of listing to compare what could affect the price from analysisdata. In order to not letting the location factor affect our analysis, I choose the listing from same Brooklyn Marketplace
+
+Host_name: Ana, url:https://www.airbnb.com/rooms/23545432, price: $42
+
+Host_name: Scott and Jill, url: https://www.airbnb.com/rooms/23462813, price: $190
+
+Ana has less bedroom, bed, bathrooms, amenities, number of reviews and less information about the neighbourhood compared to Scott whose listing price is much higher than Ana.
+Listing from same neighbourhood have different price because of different parameters of bedrooms, beds, bathrooms, amenities, number of reviews, therefore I have some clue about what should I do to train my model in the beggining.
+Now Let us look at both analysisData and scoringData in order to avoid false assumption and exploration of the actual relationship between price and other factors provided.
+
+#2.1 Loading and Exploring Data
+Loading necessary library first
+```{r message=FALSE, results='hide'}
+library(knitr)
+library(ggplot2)
+library(plyr)
+library(dplyr)
+library(corrplot)
+library(caret)
+library(scales)
+library(randomForest)
+library(geosphere)
+library(gbm)
+library(GGally)
+library(glmnet)
+```
+Below, I am reading the csv’s as dataframes into R.
+
+```{r}
+data <- read.csv("/Users/rehemaitidilireba/Downloads/all/analysisData.csv")
+scoringData <- read.csv("/Users/rehemaitidilireba/Downloads/all/scoringData.csv")
+```
+#2.2 Data size and structure
+The train dataset consist of character, factor, integer and numeric variables. Most of the character variables are actually (ordinal) factors.
+
+```{r eval=FALSE}
+#dim(data)
+#str(data)
+#summary(data$price)
+```
+
+The train data has 29142 observations and 96 variables
+
+#2.3 Merge the training and testing data 
+(by doing this we could save more time on adding or deleting the new levels in scoringData)
+
+```{r results="hide", message=FALSE, warning=FALSE}
+data$id <- NULL
+scoringData$id <- NULL
+scoringData$price <- NA
+all <- rbind(data, scoringData)
+dim(all)
+```
+Without the Id’s, the dataframe consists of 36428 observations and 95 predictors
+
+##2.4 Exploring some of the most important variables
+###2.4.1 Exploring the Data, The response variable; Price
+As you can see, the airbnb prices are left skewed. This was expected as few people can afford very expensive houses. I will keep this in mind, and take measures before modeling.
+
+```{r}
+ggplot(data=all[!is.na(all$price),], aes(x=price)) +
+       geom_histogram(fill="blue", binwidth = 10) +
+  scale_x_continuous(breaks= seq(0, 1000, by=100))
+summary(all$price)
+```
+
+Now, let us evaluate the correlation between the numeric variables that I found important from doing business analyzing, including bedrooms, bathrooms, accommodates, and beds
+
+```{r message=FALSE, warning=FALSE}
+plot2 <- ggpairs(data=all, columns=c("price", "bedrooms","bathrooms","beds","accommodates"),
+               mapping = aes(color = "dark green"),
+               axisLabels="show")
+plot2
+```
+
+The graph shows that price is highly correlated to bedrooms, beds and accommodates
+
+####Explore the correlation between price and other variables
+#####Whehter there is a price fluctuation with calendar updated time difference
+```{r}
+yp <- ggplot(all[!is.na(all$price),], aes(x=calendar_updated, y=price)) +
+  geom_bar(stat='summary', fun.y = "median", fill='blue')+
+  scale_y_continuous(breaks= seq(0, 500, by=50)) +
+  geom_label(stat = "count", aes(label = ..count.., y = ..count..)) +
+  coord_cartesian(ylim = c(0, 800)) +
+  geom_hline(yintercept=50, linetype="dashed", color = "red")
+yp
+```
+
+This graph shows that price does not highly relate to canlendar updated time
+####Next, visualize the correlation between price and bedrooms
+
+```{r}
+bp <- ggplot(all[!is.na(all$price),], aes(x=bedrooms, y=price)) +
+  geom_bar(stat='summary', fun.y = "median", fill='blue')+
+  scale_y_continuous(breaks= seq(0, 1000, by=100)) +
+  geom_label(stat = "count", aes(label = ..count.., y = ..count..)) +
+  coord_cartesian(ylim = c(0, 1000)) +
+  geom_hline(yintercept=200, linetype="dashed", color = "red")
+bp
+```
+
+Price fluatuates as bedrooms increase to 4 to 8.
+
+####Explore the correlation between price and accommodates.
+```{r}
+ap <- ggplot(all[!is.na(all$price),], aes(x=accommodates, y=price)) +
+  geom_bar(stat='summary', fun.y = "median", fill='blue')+
+  scale_y_continuous(breaks= seq(0, 1000, by=100)) +
+  geom_label(stat = "count", aes(label = ..count.., y = ..count..)) +
+  coord_cartesian(ylim = c(0, 1000)) +
+  geom_hline(yintercept=200, linetype="dashed", color = "red")
+ap
+```
+
+Price is higher when there are more acommodates.
+
+####Now, See the correlation between price and neighbourhood_group_cleansed.
+```{r}
+np <- ggplot(all[!is.na(all$price),], aes(x=neighbourhood_group_cleansed, y=price)) +
+        geom_bar(stat='summary', fun.y = "median", fill='blue') +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+        scale_y_continuous(breaks= seq(0, 200, by=30)) +
+        geom_hline(yintercept=100, linetype="dashed", color = "red")
+
+np
+```
+
+Price is correlated to the location of the listing, Manhattan has the most highest price compared to other 4 boroughs.
+
+###2.4.2 Look at the correlation between price and numeric variables
+Sort on decreasing correlations with price, and select only high corelations.
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+numericVars <- which(sapply(all, is.numeric)) #index vector numeric variables
+numericVarNames <- names(numericVars) #saving names vector for use later on
+all_numVar <- all[, numericVars]
+cor_numVar <- cor(all_numVar, use="pairwise.complete.obs")
+```
+```{r echo=FALSE}
+cor_sorted <- as.matrix(sort(cor_numVar[,'price'], decreasing = TRUE))
+CorHigh <- names(which(apply(cor_sorted, 1, function(x) abs(x)>0.3)))
+cor_numVar <- cor_numVar[CorHigh, CorHigh]
+```
+```{r}
+corrplot.mixed(cor_numVar, tl.col="black", tl.pos = "lt")
+```
+
+The number of variables with a correlation of at least 0.3 is only 5, and cleaning_fee includes much more missing values.
+
+###Completeness of the data
+We need to know the missing values before training the model
+```{r}
+NAcol <- which(colSums(is.na(all)) > 0)
+sort(colSums(sapply(all[NAcol], is.na)), decreasing = TRUE)
+cat('There are', length(NAcol), 'columns with missing values')
+```
+
+#3.1 Impute missing value for preparing the model
+####Since url has most of the missing value, we will just assgin none to it
+
+```{r echo= FALSE}
+all$thumbnail_url[is.na(all$thumbnail_url)] <- 'None'
+all$medium_url[is.na(all$medium_url)] <- 'None'
+all$xl_picture_url[is.na(all$xl_picture_url)] <- 'None'
+```
+
+Drop variables that have too many missing value
+
+```{r}
+all <- select(all, -license,-monthly_price, -square_feet,-weekly_price)
+```
+
+Impute missing value for other variables.
+
+For cleaning_fee, security_deposit, beds and reviews_per_month, I use median as imputing parameter
+
+```{r echo=FALSE}
+all[is.na(all$cleaning_fee),]$cleaning_fee <- median(all$cleaning_fee, na.rm = T)
+all[is.na(all$security_deposit),]$security_deposit <- median(all$security_deposit, na.rm = T)
+all[is.na(all$zipcode),]$zipcode <- 10025
+all[is.na(all$beds),]$beds <- median(all$beds, na.rm = T)
+all[is.na(all$reviews_per_month),]$reviews_per_month <- median(all$reviews_per_month, na.rm = T)
+```
+
+####Look at our class of the variables overall
+
+```{r}
+numericVars <- which(sapply(all, is.numeric)) #index vector numeric variables
+factorVars <- which(sapply(all, is.factor)) #index vector factor variables
+characterVars <- which(sapply(all, is.character)) #index vector character variables
+cat('There are', length(numericVars), 'numeric variables, and', length(factorVars), 'factor variables, and',length(characterVars),'character variables')
+```
+
+In the data, most of the categorical variables are converted to factor variables, which will make the prediction more biased
+
+###Below I am checking the correlations again. 
+
+```{r echo = FALSE, message=FALSE, warning=FALSE}
+all_numVar <- all[, numericVars]
+cor_numVar <- cor(all_numVar,use="pairwise.complete.obs") #correlations of all numeric variables
+cor_sorted <- as.matrix(sort(cor_numVar[,'price'], decreasing = TRUE))
+CorHigh <- names(which(apply(cor_sorted, 1, function(x) abs(x)>0.1)))
+cor_numVar <- cor_numVar[CorHigh, CorHigh]
+```
+```{r}
+corrplot.mixed(cor_numVar, tl.col="black", tl.pos = "lt", tl.cex = 0.7,cl.cex = .7, number.cex=.7)
+```
+
+After cleaning the data, variables which has at least 0.3 correlation increased to 10.
+
+#3.2 Feature Selection
+##3.2.1 Finding variable importance with a quick Random Forest
+Although the correlations are giving a good overview of the most important numeric variables and multi-collinearity among those variables, I wanted to get an overview of the most important variables including the categorical variables before moving on to visualization. So I run a simple random forest to see what are the most important variables.
+
+###Quick Random Forest 
+
+First let us select only numeric and factor variables than character Variables and drop the character variables that does not help trainning the simple model for now.
+
+Some url and id variables are unnecessary for training the model in the beginning. If we could use advance packages in r and machine learning techniques, we could utilize the picture_url or other url to predict the host's race, popularity. We could also utilize variables that have descriptive text of the host to do sentiment analysis, but for training simple model, we do not need it now.
+
+###Temporarily drop the variables with more than 53 levles to run a quick rf
+
+```{r echo= FALSE}
+all <- select(all,-thumbnail_url,-medium_url,-xl_picture_url,-street,-city,-host_location,last_scraped, -host_id,calendar_last_scraped,-calendar_updated,-host_since,-host_name,-smart_location,-zipcode,-host_neighbourhood,-host_picture_url,-host_thumbnail_url,-host_about,-host_url,-picture_url,-house_rules,-interaction,-access,-transit,-notes,-neighborhood_overview,-description,-space,-summary,-name, -listing_url)
+#Temporarily drop the variables with more than 53 levles
+all1 <- select(all, -first_review,-last_review,-host_response_rate,-host_verifications,-neighbourhood, -neighbourhood_cleansed,-amenities) 
+```
+```{r eval= FALSE}
+set.seed(2018)
+quick_RF <- randomForest(x=all1[1:29142,-91], y=all1$price[1:29142], ntree=100,importance=TRUE)
+imp_RF <- importance(quick_RF)
+imp_DF <- data.frame(Variables = row.names(imp_RF), MSE = imp_RF[,1])
+imp_DF <- imp_DF[order(imp_DF$MSE, decreasing = TRUE),]
+ggplot(imp_DF[1:20,], aes(x=reorder(Variables, MSE), y=MSE, fill=MSE)) + geom_bar(stat = 'identity') + labs(x = 'Variables', y= '% increase MSE if variable is randomly permuted') + coord_flip() + theme(legend.position="none")
+```
+
+![](/Users/rehemaitidilireba/p9.png)
+
+
+From the quick random forest, I could see what are the most important variables so far before running Lasso, we have 19 variables and the selected variables are different from the highly correlated one.
+
+
+#3.3 Feature Engineering
+####Categorical variables are known to hide and mask lots of interesting information in a data set.
+A categorical variable has too many levels in our data such as neighborhood related variables, room_type, bed_type, property_type and amenities (which are highly related variables to predict price).
+This pulls down performance level of the model. And it is hard to train random forest in later with more than 53 levels of variables(causing error).
+By Dummy coding, we will convert a categorical input variable into continuous variable.
+Presence of a level is represent by 1 and absence is represented by 0.
+For every level present, one dummy variable will be created.This method is also called "One Hot Encoding"
+
+##3.3.1 Convert Categorical Variables to Dummy
+
+####First, we need to convert neighbourhood to dummies
+
+```{r}
+neighbourhood_dummies <- predict(dummyVars(~ neighbourhood, data = all), newdata = all)
+dim(neighbourhood_dummies)
+all <- data.frame(cbind(all,neighbourhood_dummies))
+```
+#### Dummies host_response_rate
+I will not include the result in here since the method is same as above using dummyVars
+
+```{r result="hide"}
+hostresponserate_dummies <- predict(dummyVars(~ host_response_rate, data = all), newdata = all)
+all <- data.frame(cbind(all,hostresponserate_dummies))
+```
+
+####Dummies neighbourhood_cleansed
+
+```{r echo=FALSE}
+neighbourhoodcleansed_dummies <- predict(dummyVars(~ neighbourhood_cleansed, data = all), newdata = all)
+all <- data.frame(cbind(all,neighbourhoodcleansed_dummies))
+all1 <- select(all,host_verifications,amenities)
+all2 <- select(all,neighbourhood_cleansed,neighbourhood,host_response_rate)
+all <- select(all,-neighbourhood_cleansed,-neighbourhood,-host_response_rate)
+```
+
+####Dummies property_type, I choose apartment, loft, and house to encode by intuition and exploring which type has the most occurrence. (I encode Apartment, Loft, and House)
+#####Apartment, loft, house
+```{r}
+is_apartment = function(s){
+  if (grepl('apartment',tolower(s))){
+    return(1)
+  }else{
+    return(0)
+  }
+}
+all$is_apartment <- sapply(as.character(all$property_type), is_apartment)
+
+#loft
+is_loft = function(s){
+  if (grepl('loft',tolower(s))){
+    return(1)
+  }else{
+    return(0)
+  }
+}
+all$is_loft <- sapply(as.character(all$property_type), is_loft)
+
+#house
+is_house = function(s){
+  if (grepl('house',tolower(s))){
+    return(1)
+  }else{
+    return(0)
+  }
+}
+all$is_house <- sapply(as.character(all$property_type), is_house)
+```
+
+###Dummies, room_type
+Converting room_type to dummy is same as converting dummy for property type. And I choose the type of private room and apartment to encode.
+```{r echo =FALSE}
+is_privateroom = function(s){
+  if (grepl('private room',tolower(s))){
+    return(1)
+  }else{
+    return(0)
+  }
+}
+all$is_privateroom <- sapply(as.character(all$room_type), is_privateroom)
+
+#entire home
+is_apt = function(s){
+  if (grepl('apt',tolower(s))){
+    return(1)
+  }else{
+    return(0)
+  }
+}
+all$is_apt <- sapply(as.character(all$room_type), is_apt)
+```
+
+
+###Dummies amenities (Breakfast, Wifi, TV, Pool, Gym, Air conditioning, Free parking, Elevator)
+I choose the following amenities because some of them are the most necessary amenities, and others like free parking, gym, pool and elevator which could affect the price
+```{r}
+#Wifi
+is_wifi = function(s){
+  if (grepl('wifi',tolower(s))){
+    return(1)
+  }else{
+    return(0)
+  }
+}
+all$is_wifi <- sapply(as.character(all$amenities), is_wifi)
+
+#Air conditioning
+is_air_conditioning = function(s){
+  if (grepl('air conditioning',tolower(s))){
+    return(1)
+  }else{
+    return(0)
+  }
+}
+all$is_air_conditioning <- sapply(as.character(all$amenities), is_air_conditioning)
+```
+
+```{r echo=FALSE}
+#Breakfast
+is_breakfast = function(s){
+  if (grepl('breakfast',tolower(s))){
+    return(1)
+  }else{
+    return(0)
+  }
+}
+all$is_breakfast <- sapply(as.character(all$amenities), is_breakfast)
+
+# Elevator
+is_elevator = function(s){
+  if (grepl('elevator',tolower(s))){
+    return(1)
+  }else{
+    return(0)
+  }
+}
+all$is_elevator <- sapply(as.character(all$amenities), is_elevator)
+
+#Pool
+is_pool = function(s){
+  if (grepl('pool',tolower(s))){
+    return(1)
+  }else{
+    return(0)
+  }
+}
+all$is_pool <- sapply(as.character(all$amenities), is_pool)
+
+#Gym
+is_gym = function(s){
+  if (grepl('gym',tolower(s))){
+    return(1)
+  }else{
+    return(0)
+  }
+}
+all$is_gym <- sapply(as.character(all$amenities), is_gym)
+
+#Free parking
+is_free_parking = function(s){
+  if (grepl('free parking',tolower(s))){
+    return(1)
+  }else{
+    return(0)
+  }
+}
+all$is_free_parking <- sapply(as.character(all$amenities), is_free_parking)
+
+#TV
+is_tv = function(s){
+  if (grepl('tv',tolower(s))){
+    return(1)
+  }else{
+    return(0)
+  }
+}
+all$is_tv <- sapply(as.character(all$amenities), is_tv)
+```
+
+###Dummies host_verifications 
+Dummies host_verifications method, I realize that host's verification method could also affect the price, since most highly credited host has more reviews and higher price
+
+```{r echo=FALSE}
+#email
+ver_email = function(s){
+  if (grepl('email',tolower(s))){
+    return(1)
+  }else{
+    return(0)
+  }
+}
+all$ver_email <- sapply(as.character(all$host_verifications), ver_email)
+
+#Phone
+ver_phone = function(s){
+  if (grepl('phone',tolower(s))){
+    return(1)
+  }else{
+    return(0)
+  }
+}
+all$ver_phone <- sapply(as.character(all$host_verifications), ver_phone)
+
+#Government_id
+ver_governid = function(s){
+  if (grepl('government id',tolower(s))){
+    return(1)
+  }else{
+    return(0)
+  }
+}
+all$ver_governid <- sapply(as.character(all$host_verifications), ver_governid)
+```
+
+
+#3.4 Feature Engineering
+####By counting the number of amenities in a listing, we could know how many amenities are in a listing, and add the new number_of_amenities to our model
+```{r}
+all$number_of_amenities <- lengths(gregexpr(",", all$amenities)) + 1
+summary(all$number_of_amenities)
+```
+
+####The distance between the host to the most visited local tourist site is also important
+For now, I chose Times Square as our destiny to calculate the distance to see whether commuting from the host_location is convenient by using longitude and latitude virables
+I used geosphere package to generate the distance of all the listings
+```{r}
+lon <- as.vector(all$longitude)
+lat <- as.vector(all$latitude)
+xy <- rbind(c(lon, lat))
+xy2 <- rbind(c(-73.9845,40,7590))
+lonlat <- cbind(all$longitude, all$latitude)
+dist_toTS <- distm(x=all[,c("longitude","latitude")], y = c(-73.9845,40.7590), fun = distHaversine)
+all$dist_toTS <- dist_toTS
+summary(all$dist_toTS)
+```
+
+####It is also useful to calculate whether the days difference between first_review and last_review is going to affect the price
+change the format of the date of first review and last review
+```{r}
+all$date_diffFL <- as.Date(as.character(all$last_review), format="%Y-%m-%d")-
+  as.Date(as.character(all$first_review), format="%Y-%m-%d")
+all$date_diffFL <- as.numeric(all$date_diffFL)
+```
+Drop the first_review, last_review,host_verifications and amenities.
+
+And let us look at the structure of the data again
+```{r echo=FALSE}
+morelevels <- select(all, amenities, host_verifications, first_review,last_review)
+all <- select(all,-amenities, -host_verifications, -first_review,-last_review)
+str(all)
+```
+
+```{r}
+dim(all)
+```
+We have 36428 observations and 564 variables !!!
+
+#4.1 Modeling techniques
+###Composing train and test
+
+```{r eval=FALSE}
+analysisdata <- all[1:29142,]
+scoringdata <- all[29143:36428,]
+scoringData1 <- read.csv("/Users/rehemaitidilireba/Downloads/all/scoringData.csv")
+analysisdata$id <- data$id
+scoringdata$id <- scoringData1$id
+scoringdata <- select(scoringdata,-price)
+```
+
+#####Before training the model to predict the price, we need to split the training data to train and test in order to get a precise rmse on test data and evaluate whether the train model is overfitting for test dataset
+
+```{r eval=FALSE}
+ratio = sample(1:nrow(analysisdata), size = 0.75*nrow(analysisdata))
+train = analysisdata[ratio,] #Train dataset 75% of total
+test = analysisdata[-ratio,]#Test dataset 75% of total
+```
+
+##4.1.1 Linear Regression
+####First let us run a simple linear regression to see the interaction, however not all the variables will present a linear relationship
+```{r eval=FALSE}
+model = lm(price~., train)
+pred = predict(model,test)
+rmse = sqrt(mean((pred-test$price)^2));rmse
+print (rmse)
+```
+rmse = 66.23
+
+Since I have too many variables, running this model will take some time in R markdown, so I halt the running process.
+Not just linear regression, but also other advance models will take a lot of time to run the model, I used the Google Cloud Machine to run all my models. I am able to access to Google Cloud for free 300 credit as a student, and my running time improve a little bit. Utilizing the cloud machine and also other packages like Tmux help me to learn more techniques to improve my code and running time, I learned a lot from this process
+
+From this linear regression model, we only get a rmse of 62.59, and there is not a problem of overfitting which is great.I want to improve my model so I drop some categorical variables such as bed_type, and also the time difference between first_review and last_review
+my model did not improve, I get a rmse of 62.55, so I assume there are much more variables has non-linear relationship with prices
+Since linear regression is not efficient to predict the non-linearity, so I want to run the Random Forest model
+
+###4.1.2 Random Forest with 100 trees
+```{r eval=FALSE}
+forest = randomForest(price~.,data= train,ntree = 100)
+pred = predict(forest, test)
+rmse = sqrt(mean((pred-test$price)^2));rmse
+print (rmse)
+```
+
+rmse = 54.02
+
+Since the process is going to take at least 1.6667 hours, I am not including the summary of the forest, however this is the best result that I get so far compared to linear regression
+
+###4.1.3 Random Forest with 1000 trees
+####Improve Random Forest by running 1000 trees (overfitting Problem)
+```{r eval=FALSE}
+set.seed(100)
+forest = randomForest(price~.,data=train,ntree = 1000)
+pred = predict(forest, test)
+rmse = sqrt(mean((pred-test$price)^2));rmse
+print (rmse)
+```
+
+rmse = 53.53
+
+Even though our rmse improved comparing to running 100 trees, there is a problem of overfitting, which will affect the model to predict the test data more accurately
+In order to solve the problem of overfitting, I used cross validation on 1000 trees
+
+
+###4.1.4 Random Forest with 10-fold Cross Validation
+```{r eval=FALSE}
+trControl = trainControl(method="cv", number =10)
+tuneGrid = expand.grid(mtry=1:5)
+set.seed(100)
+cvForest = train(price~.,data=train,method="rf",ntree=300,trControl=trControl,tuneGrid=tuneGrid )
+cvForest
+## the best final value was mtry= 5
+set.seed(100)
+forest = randomForest(price~.,data=train,ntree = 300,mtry=5)
+predForest = predict(forest,test)
+rmse = sqrt(mean((predForest-test$price)^2));rmse
+```
+rmse = 57.23
+
+The cross validation did not solve the problem, conversely, it make our model worse, I think that cross validation does not work in here because I have more than 560 variables which could simply make the validating process more tedious
+and I need to change the seed to see whether the cross validation is suitable for my model
+
+#####All of above random forest model took me at least 7-20 hours to run the code by using cloud machine, so I think R is not a great tool to run Random Forest compares to other language such as Python
+
+
+###4.1.5 Random Forest Boosting with 1000 trees
+```{r eval=FALSE}
+boost = gbm(price~.,train,distribution="gaussian",
+            n.trees = 1000,interaction.depth = 3,shrinkage = 0.01)
+predBoost = predict(boost,newdata=scoringdata,n.trees = 1000)
+pred1 = predict(boost, test)
+rmse = sqrt(mean((pred1-test$price)^2));rmse
+print (rmse)
+```
+rmse = 57.61
+
+Need to tune the parameters of boosting to get a better result since I have too many variables
+
+###4.1.6 Random Forest Boosting with 10000 trees
+```{r eval=FALSE}
+boost = gbm(price~.,train,distribution="gaussian",
+            n.trees = 10000,interaction.depth = 5,shrinkage = 0.001)
+predBoost = predict(boost,newdata=scoringdata,n.trees = 10000)
+pred1 = predict(boost, test)
+rmse = sqrt(mean((pred1-test$price)^2));rmse
+print (rmse)
+```
+rmse = 54.71
+
+It turns out that running more trees to run boosting by tuning the parameter could fix the problem of overfitting and fit into my models
+
+#5.1 Results 
+I will use a table to show the corresponding problem in the above models
+![Caption for the picture.](/Users/rehemaitidilireba/Desktop/table_kaggle.png)
+
+My Conlusion from this prediction: 
+
+I used simple linear regression by using only 38 variables which has the most correlation showed in the correlation graph in the beginning(which is not shown in here), and the rmse of the model is much lower than dummy encoding some variables, so I assume that linear regression is not suitable for more and various type of variables. And random forest is the best for my 560 variables since it generates a lower rmse with a 53.53. And the method of cross validation and boosting is a good statistical enhancement for trainning my random forest model since I have to tune my parameters a lot to get a better result. In addition, my feature selection are more based on my intuition rather than selected from running random forest or correlation distribution, and it turns out that intuition is better than feature selecting the variables. 
+
+#6.1 Discussion 
+###6.1.1 Lesson Learned
+What I did right: spending more time to explore and clean the data before rushing to train the models.
+
+What I did wrong: I should not dummy some neighbourhood variables since most of them have more than 200 levels which will cause overfitting problem if I one hot encode them.I should take simple step to run my model first to get a summary of the model, if the model is not good and then I should include more categorical variables.
+
+What I could improve: I should spend more time on training simple model using less but important variables since more useless variables could create noise for my model and make my prediction worse.
+
+###6.1.2 Reflection
+Moreover, The data exploring and cleaning process took me at least 40% of time and sometimes I find out that when I begin to train the model, I have a lot of errors or missing values,
+so I think before training any model, the data processing part is the most essential and necessary part and I have to be patient to understand my dataset
+Give you an simple idea of how it take me to run 1000 random forest trees in R
+
+![](/Users/rehemaitidilireba/Desktop/1.png)
+
+
+I also need to spend more time to play with my data, by "play", I mean data visualization since visuals help me a lot to get a better understanding of the relationship and the distribution of some of the Variables.
+
+Overall, I am able to explore more packages of R to train my model and fully utilize the concept that I learned from the class, even though, the running process took a lot of time (at least 70% of a week), I am really grateful for learning more machine learning concept to improve my model.
+I am also able to utilize cloud machine which is one of the important skills for being a data scientist.
+
+I am looking forward to improve my R coding skills and solve more Kaggle competition on my own or with my classmates even though it is not required my class.
+The overall kaggle experience help me review all of the materials that we covered in this semester.
+
+
+#7.1 Citations
+The following are the website that I used to learning some machine learning concept and R coding techniques
+#https://www.dataquest.io/blog/machine-learning-tutorial/
+#https://www.kaggle.com/pmarcelino/comprehensive-data-exploration-with-python
+#https://www.kaggle.com/auygur/step-by-step-house-price-prediction-r-2-0-77
+
