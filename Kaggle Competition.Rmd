@@ -1,6 +1,6 @@
 ---
 title: "Kaggle Competition on Predicting Airbnb Price "
-author: "Dil"
+author: "Dil."
 output:
   html_document: default
   pdf_document: default
